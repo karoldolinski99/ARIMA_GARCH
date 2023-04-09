@@ -1,0 +1,360 @@
+---
+title: "<center>Ekonometria Finansowa i Dynamiczna - projekt II</center>"
+output: 
+    html_document:
+          toc: true
+          toc_float: true
+          number_sections: true
+          css: style.css
+---
+
+<center>
+Karol Doliński, Magdalena Kurek, Magdalena Smalarz, Małgorzata Warczyńska
+
+Informatyka i Ekonometria
+</center>
+
+```{r setup, include=FALSE}
+options(scipen=999)
+knitr::opts_chunk$set(
+ fig.width = 6,
+ fig.asp = 0.9,
+ out.width = "100%"
+)
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+library(aTSA)
+library(fGarch)
+library(forecast)
+library(ggplot2)
+library(plotly)
+library(rugarch)
+library(tseries)
+library(urca)
+library(lmtest)
+library(table1)
+library(kableExtra)
+library(ggpubr)
+
+source('EFiD_2_functions.r')
+```
+
+# Wprowadzenie
+
+Tematem niniejszego projektu jest modelowanie szeregów czasowych za pomocą liniowych modeli ARMA i ARIMA. W pracy w pierwszej kolejności zbadano stacjonarność szeregu i dopasowano odpowiedni model wraz z weryfikacją niezbędnych założeń. Następnie sprawdzono występowanie efektu ARCH i wyznaczono prognozy cen. 
+
+Wykorzystane w pracy dane zostały pobrane w dniu 13.04.2022 roku ze strony [Stooq](https://stooq.pl/) i dotyczą okresu od stycznia 2018 roku do końca marca 2022 roku. Zbiór danych dotyczy wartości zamknięcia dla kursu walutowego CHF–EUR w ujęciu dziennym. Przyjęty poziom istotności: $\alpha=5\%$.
+
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+dataset <- read.csv('chfeur_d.csv')
+dataset <- cbind.data.frame(dataset$Data, dataset$Zamkniecie)
+colnames(dataset) <- c('Date', 'Closing')
+april <- read.csv('chfeur_d_april.csv')
+```
+
+# Stopy zwrotu
+
+Stopa zwrotu jest wskaźnikiem finansowym, miarą ryzyka danego przedsięwzięcia czy inwestycji. W przypadku kursów walutowych obliczone stopy zwrotu dostarczają informacji na temat kształtowania się ich wartości w określonym przedziale czasu. Na podstawie danych dziennych obliczono logarytmiczne stopy zwrotu:
+
+$$R_{t} = ln(\frac{C_t}{C_{t-1}})$$
+gdzie:  
+
+$C_{t}$ – cena zamknięcia na sesji t
+
+$C_{t-1}$ – cena zamknięcia na sesji t-1
+
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, out.width="75%", fig.align = "center"}
+rates <- function_rate_of_return(dataset)
+
+rates_plot <- rates
+rates_plot$Rate_of_Return <- round(rates_plot$Rate_of_Return, 3)
+
+p1<-rates_plot %>%
+  ggplot(aes(x=Date, y=Rate_of_Return)) +
+  geom_line(alpha=0.5) +
+  #geom_point(size=.5)+
+  theme_bw() +
+  geom_hline(yintercept=0, linetype="solid", color = "black", alpha=0.5) +
+  labs(y = "Wartość stopy zwrotu", x="Lata", title = "Wartości stóp zwrotu dla kursu CHF–EUR")
+p1
+
+```
+Największe wahania kursu walut widoczne są na początku 2022 roku. Jest to konsekwencja wybuchu wojny w Ukrainie.
+
+# Model ARMA i ARIMA
+Podstawowym a zarazem efektywnym narzędziem do modelowania oraz prognozowania szeregów czasowych są – w przypadku szeregów stacjonarnych – modele $ARMA$ oraz – w przypadku szeregów niestacjonarnych – modele $ARIMA$. 
+Modele ARMA posiadają dwa parametry $p$ i $q$, gdzie $p$ jest rzędem autoregresji, a $q$ rzędem średniej ruchomej. Dla procesu $X_t$ model ten wyraża się wzorem:
+
+$$X_t=\phi_0+\phi_1X_{t-1}+\phi_2X_{t-2}+...+\phi_pX_{t-p}+\varepsilon_t+
+\theta_1\varepsilon_{t-1}+\theta_2\varepsilon_{t-2}+...+\theta_q\varepsilon_{t-q}$$
+
+gdzie $\varepsilon_t$ to proces resztowy (biały szum)
+
+Problemem jest jednak znalezienie najbardziej satysfakcjonującego modelu $ARMA(p,q)$, czyli odpowiednie dopasowanie wspomnianych parametrów.<br/>
+Jeżeli chodzi zaś o modele $ARIMA(p,d,q)$ – kluczową rolą jest zbadanie stopnia integracji ($d$), czyli ocena stacjonarności. W przypadku wykazania stacjonarności szeregu parametr $d$ ma wartość 0, a sam szereg nie wymaga przekształceń. W sytuacji odwrotnej należy zmodyfikować go i sprowadzić do stacjonarności (transformacje log, różnicowanie) uzyskując jednocześnie wartość stopnia integracji.<br/>
+Przed zastosowaniem odpowiedniego modelu należy zatem sprawdzić stacjonarność analizowanego szeregu. 
+
+## Stacjonarność
+
+W celu zbadania stacjonarności wykorzystano rozszerzony test Dickeya-Fullera o hipotezach:<br/>
+$$H_0: Szereg~nie~jest~stacjonarny\\H_1: \sim H_0$$
+Wartość p-value była równa w przybliżeniu 0.01, a więc mniej niż przyjęty poziom istotności 0.05. Dlatego istnieją podstawy do odrzucenia hipotezy zerowej, co oznacza, iż badany szereg jest stacjonarny.
+
+## Estymacja i wybór modelu
+
+Etap estymacji obejmuje oszacowanie parametrów modelu. Dobór parametrów został dokonany w oparciu o kryterium Akaikego. Najniższą wartość kryterium otrzymano dla modelu $ARIMA(1,0,2)$, czyli de facto $ARMA(1,2)$. 
+
+Postać modelu (z dokładnością do czterech miejsc dziesiętnych): 
+
+$$X_t=0.0001-0.6826X_{t-1}+0.7107\varepsilon_{t-1}-0.0879\varepsilon_{t-2}$$
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+model_arima <- arima(rates$Rate_of_Return, order = c(1,0,2))
+#model_arima_summary <- summary(model_arima)
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+coef <- round(coeftest(model_arima), 4)
+coef <- coef[1:4,1:4]
+coef <- coef[,-3]
+colnames(coef) <- c('Wartość wyestymowanego parametru', 'Błąd standardowy', 'P-value testu istotności parametru')
+rownames(coef) <- c("$\\phi_1$ (AR1)", "$\\theta_1$ (MA1)", '$\\theta_2$ (MA2)', '$\\phi_0$ (stała)')
+
+coef %>% kbl() %>% kable_styling() %>%
+  footnote(general = "Tab. 1.: Wartości wyestymowanych parametrów wraz z oceną ich istotności",
+           general_title = "",
+           footnote_as_chunk = T, title_format = c("italic"))
+
+```
+
+Wartość p-value dla wszystkich współczynników przy zmiennych jest mniejsza niż przyjęty poziom istotności. Istnieją więc podstawy do odrzucenia hipotezy głównej (mówiącej o braku istotności zmiennej). Wszystkie współczynniki przy zmiennych są statystycznie istotne dla przyjętego poziomu istotności. <br/>
+
+## Weryfikacja 
+Kolejnym krokiem jest ocena uzyskanego modelu, czyli sprawdzenie:
+<ul>
+<li>białoszumowości (testy autokorelacji),</li> 
+<li>istotności parametrów przy najwyższych opóźnieniach (zweryfikowano powyżej),</li>
+<li>występowania efektu ARCH.</li>
+</ul>
+
+W celu zbadania autokorelacji kolejno sprawdzono jej występowanie z wykorzystaniem testu Ljung-Boxa. Hipotezy: 
+
+<center>$H_0:\rho_1 = \rho_2 = ... = \rho_k = 0$</center>
+
+<center>$H_1: \rho_i \neq 0$ dla pewnego $i$ </center>
+
+Hipoteza zerowa zakłada nieistotność autokorelacji do rzędu $k$. W badaniu przyjęto $k=30$. Otrzymane wyniki przeprowadzonego testu (wartości p-value) przedstawiono na rysunku.
+```{r echo=FALSE, message=FALSE, warning=FALSE, out.width="75%", fig.align = "center"}
+# --- autocorelation ---
+Box_result <- c()
+for(i in 1:30){
+    Box_result[i] <- Box.test(model_arima$residuals, i)$p.value
+}
+Box_result <- data.frame(cbind(1:30, Box_result))
+colnames(Box_result) <- c('Lag', 'pvalue')
+
+gg <- ggplot(Box_result, aes(x=Lag, y=pvalue)) +
+  geom_point() +
+  ylim(c(0, 1)) + 
+  xlim(c(1, 30)) + 
+  labs(y="P-value",
+       x="Opóźnienie",
+       title="Test Ljung-Box'a") +
+    theme_bw()
+
+plot(gg)
+
+```
+Dla każdego badanego opóźnienia p-value testu wyraźnie przekracza przyjęty poziom istotności, co oznacza, że nie ma podstaw do odrzucenia hipotezy zerowej. Zweryfikowano zatem, że autokorelacja reszt nie występuje w badanym modelu.
+
+Dla poszczególnych stóp zwrotu wyznaczono funkcje autokorelacji. Funkcja autokorelacji (ACF) mierzy zależnosci statystycznej zmiennej z jej opóźnieniem k-tego rzędu. 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, out.width="75%", fig.align = "center"}
+ggAcf(model_arima$residuals) +
+  ggtitle('Autokorelacja reszt') +
+  xlab("Opóźnienie") +
+  theme_bw()
+```
+
+Jedynie w dwóch przypadkach wartości współczynników autokorelacji nieznacznie wykraczają poza przedział ufności, jednakże wskazane opóźnienia są na tyle duże, że uznano je za przypadkowe i powołano się na wyniki testu Ljung-Box'a, mówiące o braku autokorelacji. Na tej podstawie zweryfikowano, że reszty modelu są białym szumem.
+
+Weryfikacji podlega także jednorodność wariancji reszt modelu, czyli zbadanie występowania homoskedastyczności. Składnik losowy o zmiennej wariancji świadczy o występowaniu efektu ARCH.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# --- ARCH ---
+# arch.test(model_arima)
+```
+
+Do sprawdzenia zmienności reszt modelu użyto testu Portmanteau-Q i testu mnożników Lagrange'a o hipotezach:
+
+$$H_0: Brak~efektu~ARCH $$
+
+$$H_1: Efekt~ARCH$$
+
+Oba testy wskazały p-value bliskie 0, co oznacza, iż istnieją podstawy do odrzucenia hipotezy zerowej, efekt ARCH występuje. Zmienność wariancji może powodować problemy podczas modelowania szeregów czasowych za pomocą ARIMA, dlatego w takim przypadku należy wykorzystać model GARCH.
+
+## Model GARCH
+
+Wykorzystując model GARCH(1,1), który jest jednym z najczęściej wykorzystywanych modeli w rodzinie GARCH, można wyestymować równananie opisujące warunkową wariancję składnika losowego:
+
+$$\sigma^2_t=\omega+\alpha\varepsilon^2_{t-1}+\beta\sigma^2_{t-1}$$
+
+Estymując warunkową wariancję rozważono dwa różne rozkłady warunkowe. Wykorzystując rozkład normalny otrzymano równanie:
+ 
+ $$\sigma^2_t=0.0552\varepsilon^2_{t-1}+0.8998\sigma^2_{t-1}$$
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# ------------ 4A ------------------
+# options: “norm”, “snorm”, “ged”, “sged”, “std”, “sstd”, “snig”, “QMLE”
+garch_sstd <- garchFit(~garch(1,1), data = model_arima$residuals, trace = FALSE, cond.dist = 'sstd')
+garch_norm <- garchFit(~garch(1,1), data = model_arima$residuals, trace = FALSE, cond.dist = 'norm')
+# GARCH(1,1)
+coef <- round(garch_norm@fit$matcoef, 4)
+coef <- coef[2:4,-3]
+colnames(coef) <- c('Wartość wyestymowanego parametru', 'Błąd standardowy', 'P-value testu istotności parametru')
+rownames(coef) <- c("$\\omega$", '$\\alpha$', '$\\beta$')
+
+coef %>% kbl() %>% kable_styling() %>%
+  footnote(general = "Tab. 2.: Wartości wyestymowanych parametrów wraz z oceną ich istotności",
+           general_title = "",
+           footnote_as_chunk = T, title_format = c("italic"))
+```
+
+Natomiast wykorzystując skośny rozkład t-Studenta otrzymano równanie:
+ 
+ $$\sigma^2_t=0.064\varepsilon^2_{t-1}+0.918\sigma^2_{t-1}$$
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+#summary(garch_sstd)
+coef <- round(garch_sstd@fit$matcoef, 4)
+coef <- coef[2:4,-3]
+colnames(coef) <- c('Wartość wyestymowanego parametru', 'Błąd standardowy', 'P-value testu istotności parametru')
+rownames(coef) <- c("$\\omega$", '$\\alpha$', '$\\beta$')
+
+coef %>% kbl() %>% kable_styling() %>%
+  footnote(general = "Tab. 3.: Wartości wyestymowanych parametrów wraz z oceną ich istotności",
+           general_title = "",
+           footnote_as_chunk = T, title_format = c("italic"))
+```
+
+W obu modelach współczynniki $\alpha$ i $\beta$ są statystycznie istotne, a współczynnik $\omega$ wyniósł 0. Testy Ljung-Boxa przeprowadzone dla obu wariantów wykazały brak autokorelacji zestandaryzowanych reszt. Nie wykryto również efektu ARCH. Natomiast  weryfikacja rozkładu zestandaryzowanych reszt modelu przebiegła pomyślnie tylko w przypadku skośnego rozkładu t-Studenta (test zgodności Kołmogorowa wykazał zgodność zestandaryzowanych reszt ze skośnym rozkładem t-Studenta). Ze względu na to zdecydowano się na wybór modelu wyestymowanego z wykorzystaniem skośnego rozkładu t-Studenta. 
+
+Wyznaczono prognozy warunkowej wariancji aż do 5 okresów do przodu.
+```{r message=FALSE, warning=FALSE, include=FALSE}
+forecast_GARCH <- round(as.data.frame(fGarch::predict(garch_sstd, n.ahead = 5, plot=T)),6)
+colnames(forecast_GARCH) <- c('Wartość prognozy', 'Błąd standardowy', 'Odchylenie standardowe','Dolna granica przedziału ufności','Górna granica przedziału ufności')
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+forecast_var <- cbind(april$Data, forecast_GARCH[,3]^2)
+colnames(forecast_var) <- c('Data', 'Wartość prognozy warunkowej wariancji')
+forecast_var %>% kbl() %>% kable_styling() %>%
+  footnote(general = "Tab. 4.: Wartości prognoz warunkowej wariancji",
+           general_title = "",
+           footnote_as_chunk = T, title_format = c("italic"))
+```
+
+# Prognoza
+
+Za pomocą modelu ARMA wyestymowanego na początku badania dokonano prognozy 5 kolejnych logarytmicznych stóp zwrotu. Wyznaczone prognozy przedstawiono poniżej wraz z wartościami 95%-owego przedziału ufności. Ponadto wyznaczono przedziały ufności wykorzystując uzyskane prognozy warunkowej wariancji.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+forecast_arima_RoR <- as.data.frame(forecast::forecast(model_arima, h=5, level = 0.95))
+sd_times_cv_RoR <- forecast_GARCH[,1] - forecast_GARCH[,4]
+forecast_arima_RoR[,4] <- forecast_arima_RoR[,1] - sd_times_cv_RoR
+forecast_arima_RoR[,5] <- forecast_arima_RoR[,1] + sd_times_cv_RoR
+forecast_arima_RoR <- round(forecast_arima_RoR, 6)
+rownames(forecast_arima_RoR) <- c('1','2','3','4','5')
+forecast_log <- cbind(april$Data, forecast_arima_RoR)
+colnames(forecast_log) <- c('Data', 'Wartość prognozy','Dolna granica przedziału ufności','Górna granica przedziału ufności', 'Dolna granica przedziału ufności (warunkowa wariancja)','Górna granica przedziału ufności (warunkowa wariancja)')
+
+forecast_log %>% kbl() %>% kable_styling() %>%
+  footnote(general = "Tab. 5.: Wartości prognoz logarytmicznych stóp zwrotu",
+           general_title = "",
+           footnote_as_chunk = T, title_format = c("italic"))
+```
+
+W kolejnym kroku dokonano prognozy logarytmów cen wraz z wartościami 95%-owego przedziału ufności.
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+garch_sstd_arima <- garchFit(~garch(1,1), data = arima(log(dataset[,2]), order = c(1,1,2))$residuals, trace = FALSE, cond.dist = 'sstd')
+forecast_GARCH_arima <- as.data.frame(fGarch::predict(garch_sstd_arima, n.ahead = 5, plot=T))
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+forecast_arima_log_prices <- as.data.frame(forecast::forecast(arima(log(dataset[2:nrow(dataset),2]), order = c(1,1,2)), h=5, level = 0.95))
+sd_times_cv <- forecast_GARCH_arima[,1] - forecast_GARCH_arima[,4]
+forecast_arima_log_prices[,4] <- forecast_arima_log_prices[,1] - sd_times_cv
+forecast_arima_log_prices[,5] <- forecast_arima_log_prices[,1] + sd_times_cv
+
+forecast_arima_log_prices <- round(forecast_arima_log_prices, 6)
+forecast_arima_log_prices <- cbind(april$Data, forecast_arima_log_prices)
+colnames(forecast_arima_log_prices) <- colnames(forecast_log)
+rownames(forecast_arima_log_prices) <- 1:5
+
+forecast_arima_log_prices %>% kbl() %>% kable_styling() %>%
+  footnote(general = "Tab. 6.: Wartości prognoz logarytmów cen",
+           general_title = "",
+           footnote_as_chunk = T, title_format = c("italic"))
+```
+
+Ostatnim etapem jest wyznaczenie prognoz cen na podstawie prognoz logarytmów cen obliczonych powyżej. Logarytmy cen mają warunkowy rozkład normalny, więc ceny mają warunkowy rozkład log-normalny, którego wartość oczekiwana obliczana jest według wzoru:
+
+$$e^{\mu+\sigma^2/2}$$
+
+Poniżej przedstawiono prognozy cen na 5 sesji do przodu. 
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+forecast_arima_log_prices <- as.data.frame(forecast::forecast(arima(log(dataset[2:nrow(dataset),2]), order = c(1,1,2)), h=5, level = 0.95))
+sd_times_cv <- forecast_GARCH_arima[,1] - forecast_GARCH_arima[,4]
+forecast_arima_log_prices[,4] <- forecast_arima_log_prices[,1] - sd_times_cv
+forecast_arima_log_prices[,5] <- forecast_arima_log_prices[,1] + sd_times_cv
+
+sd <- (forecast_arima_log_prices$`Point Forecast` - forecast_arima_log_prices$`Lo 95`)/1.96
+forecast_arima_prices <- exp(forecast_arima_log_prices$`Point Forecast`+0.5*sd^2)
+forecast_arima_prices <- as.data.frame(forecast_arima_prices)
+
+forecast_arima_prices[,2:5] <- exp(forecast_arima_log_prices[,2:5])
+forecast_arima_prices <- round(forecast_arima_prices, 6)
+forecast_arima_prices <- cbind(april$Data, forecast_arima_prices)
+colnames(forecast_arima_prices) <- colnames(forecast_log)
+rownames(forecast_arima_prices) <- c('1','2','3','4','5')
+
+forecast_arima_prices %>% kbl() %>% kable_styling() %>%
+  footnote(general = "Tab. 7.: Wartości prognoz cen",
+           general_title = "",
+           footnote_as_chunk = T, title_format = c("italic"))
+```
+
+Następnie przedstawiono rzeczywiste ceny pierwszych 5 sesji kwietnia 2022 w porównaniu z otrzymanymi prognozami cen:
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+april <- read.csv('chfeur_d_april.csv')
+ME <- round(mean((april$Zamkniecie-forecast_arima_prices[,2])),5)
+MAE <- round(mean(abs(april$Zamkniecie-forecast_arima_prices[,2])),5)
+MSE <- round(mean((april$Zamkniecie-forecast_arima_prices[,2])^2),5)
+MAPE <- round(mean(abs((april$Zamkniecie-forecast_arima_prices[,2])/april$Zamkniecie)),5)
+bledy <- cbind(ME,MAE,MSE,MAPE)
+april <- cbind(april$Data,round(april$Zamkniecie,4), round(forecast_arima_prices[,2],4))
+colnames(april) <- c('Data', 'Wartości rzeczywiste','Wartości prognozowane')
+april %>% kbl() %>% kable_styling() %>%
+  footnote(general = "Tab. 8.: Porównanie wartości rzeczywistych i prognoz cen",
+           general_title = "",
+           footnote_as_chunk = T, title_format = c("italic"))
+
+```
+Tylko pierwsza prognoza była zawyżona, pozostałe 4 zaprognozowane wartości okazały się niższe od rzeczywistych cen. Dla lepszego zobrazowania jakości prognoz wyznaczono podstawowe błędy prognozy ex-post i zamieszczono je w poniższej tabeli:
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+bledy %>% kbl() %>% kable_styling() %>%
+  footnote(general = "Tab. 9.: Błędy prognozy ex-post",
+           general_title = "",
+           footnote_as_chunk = T, title_format = c("italic"))
+```
+
+Zgodnie z uzyskanymi wartościami prognozy różnią się średnio (w jednostkach bezwzględnych) o 0,005 od wartości rzeczywistych. Średni absolutny błąd procentowy (MAPE) wskazał, iż różnica pomiędzy prognozami a wartościami rzeczywistymi to średnio tylko 0,5%. Można zatem stwierdzić, że za pomocą wyestymowanego modelu ARMA otrzymano dobre prognozy cen kursu CHF–EUR.
+
+# Podsumowanie
+
+W badaniu wykorzystano dzienne logarytmiczne stopy zwrotu kursu walutowego CHF–EUR. Na podstawie kryterium Akaikego zdecydowano, iż najlepszym modelem opisującym ten szereg czasowy będzie ARMA(1,2). Model tez przeszedł pozytywną weryfikację pod względem białoszumowości i braku autokorelacji. Ponadto parametry przy opóźnieniach były statystycznie istotne. Zidentyfikowano występowanie efektu ARCH (heteroskedastyczność reszt), dlatego wyestymowano model GARCH(1,1). Wykorzystano skośny rozkład t-Studenta jako rozkład warunkowy przy estymacji modelu GARCH(1,1). Następnie za pomocą wyestymowanego modelu ARMA dokonano prognozy logarytmicznych stóp zwrotu i logarytmów cen na 5 sesji do przodu i dla każdej prognozowanej wartości zamieszczono 95% przedział ufności. Na podstawie prognoz logarytmów cen wyznaczono prognozy cen pamiętając, że mają one warunkowy rozkład log-normalny. Prognozowane ceny porównano z wartościami rzeczywistymi dla pierwszych 5 sesji kwietnia 2022 i stwierdzono, że model ARMA dobrze zaprognozował przyszłe ceny kursu walutowego CHF-EUR. 
